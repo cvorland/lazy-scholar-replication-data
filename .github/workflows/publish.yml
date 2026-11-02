@@ -1,0 +1,51 @@
+name: Publish FORRT data
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: forrt-data-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Test converter and publication rules
+        run: python -m unittest -v
+      - name: Check upstream and build if changed
+        id: build
+        env:
+          DATA_REPOSITORY: ${{ github.repository }}
+        run: |
+          python pipeline.py build --repository "$DATA_REPOSITORY" --state .pipeline-state.json
+          python -c 'import json, os; changed=json.load(open("dist/build-status.json"))["changed"]; open(os.environ["GITHUB_OUTPUT"], "a").write("changed=" + str(changed).lower() + "\n")'
+      - name: Verify draft assets and publish
+        if: steps.build.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DATA_REPOSITORY: ${{ github.repository }}
+        run: python pipeline.py publish --repository "$DATA_REPOSITORY"
+      - name: Save publication state and periodic activity
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          python pipeline.py record-success
+          git add -- .pipeline-state.json
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'Record successful FORRT data check'
+            git push origin "HEAD:$DEFAULT_BRANCH"
+          fi
